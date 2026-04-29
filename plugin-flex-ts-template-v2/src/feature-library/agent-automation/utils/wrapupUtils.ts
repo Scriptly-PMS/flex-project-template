@@ -7,6 +7,10 @@ import { ExtendedWrapupState } from '../flex-hooks/states/extendedWrapupSlice';
 import { TaskQualificationConfig } from '../types/ServiceConfiguration';
 import TaskRouterService from '../../../utils/serverless/TaskRouter/TaskRouterService';
 import logger from '../../../utils/logger';
+// SD-3713: cross-feature imports so the auto-wrapup persistence mirrors the dispositions
+// `beforeCompleteTask` hook's three-field write (outcome + content + custom_attributes).
+import { isNotesEnabled } from '../../dispositions/config';
+import { DispositionsTaskState } from '../../dispositions/flex-hooks/states';
 
 // SD-3713: `manager` is threaded through so the auto-wrapup callback can read the
 // dispositions Redux slice and persist the agent's selection before CompleteTask fires.
@@ -29,29 +33,35 @@ const startTimer = (
       unsubscribe();
     }
     if (task && Flex.TaskHelper.isInWrapupMode(task)) {
-      // SD-3713: persist the agent-selected disposition (held in the dispositions Redux slice)
-      // before CompleteTask. The upstream `beforeCompleteTask` hook can't be relied on here:
-      // under `require_disposition` it aborts CompleteTask, and under native (Agent Copilot)
-      // wrapup it bypasses the abort *without* persisting the selection. Fall back to
-      // `default_outcome` only when no agent selection exists. Optional chaining keeps this
+      // SD-3713: persist the agent's disposition input (held in the dispositions Redux slice)
+      // before CompleteTask. Mirrors the three-field write from the upstream
+      // `beforeCompleteTask` hook (dispositions/flex-hooks/actions/CompleteTask.ts) so the
+      // auto-wrapup path doesn't drop notes / custom_attributes when the hook bypasses or
+      // aborts persistence. The hook can't be relied on here: under `require_disposition` it
+      // aborts CompleteTask, and under native (Agent Copilot) wrapup it bypasses the abort
+      // *without* persisting any data. Falls back to `taskConfig.default_outcome` only for
+      // the `outcome` field, when no agent selection exists. Optional chaining keeps this
       // safe when the dispositions feature flag is off (slice never registered).
-      const taskDisposition = (manager.store.getState() as AppState)[reduxNamespace]
-        .dispositions?.tasks?.[task.taskSid];
+      const taskDisposition: DispositionsTaskState | undefined =
+        (manager.store.getState() as AppState)[reduxNamespace].dispositions?.tasks?.[task.taskSid];
       const outcomeToSave = taskDisposition?.disposition || taskConfig.default_outcome;
 
+      const conversations: Record<string, string> = {};
       if (outcomeToSave) {
+        conversations.outcome = outcomeToSave;
+      }
+      if (isNotesEnabled() && taskDisposition?.notes) {
+        conversations.content = taskDisposition.notes;
+      }
+      if (taskDisposition?.custom_attributes) {
+        Object.assign(conversations, taskDisposition.custom_attributes);
+      }
+
+      if (Object.keys(conversations).length > 0) {
         try {
-          await TaskRouterService.updateTaskAttributes(
-            task.taskSid,
-            {
-              conversations: {
-                outcome: outcomeToSave,
-              },
-            },
-            true,
-          );
+          await TaskRouterService.updateTaskAttributes(task.taskSid, { conversations }, true);
         } catch (error) {
-          logger.error(`[agent-automation] Error updating task outcome: ${error}`);
+          logger.error(`[agent-automation] Error updating task attributes: ${error}`);
         }
       }
       logger.info(`[agent-automation] Performing auto-wrapup for ${sid}`);
