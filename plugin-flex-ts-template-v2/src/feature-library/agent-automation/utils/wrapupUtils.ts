@@ -65,7 +65,11 @@ const startTimer = (
         }
       }
       logger.info(`[agent-automation] Performing auto-wrapup for ${sid}`);
-      Flex.Actions.invokeAction('CompleteTask', { sid });
+      // SD-3713: `autoWrapup: true` signals the dispositions `beforeCompleteTask`
+      // hook to skip its abort branches. Without this, hard-abort scenarios
+      // (require_disposition + native-wrapup OFF / queue not in enabledQueues)
+      // would leave the task stuck in wrapup forever — defeating auto_wrapup.
+      Flex.Actions.invokeAction('CompleteTask', { sid, autoWrapup: true });
       return;
     }
     logger.info(`[agent-automation] Didn't auto-wrapup due to task already completed for ${sid}`);

@@ -48,6 +48,11 @@ export const actionHook = function setDispositionBeforeCompleteTask(flex: typeof
     if (!payload.task?.taskSid) {
       return;
     }
+    // SD-3713: when CompleteTask is invoked from agent-automation's auto-wrapup timer,
+    // skip the abort branches. Aborting on auto-wrapup leaves the task stuck in wrapup
+    // forever — that's exactly what auto_wrapup is supposed to prevent. We still fall
+    // through to the persist block below so any data the agent did enter gets queued.
+    const skipAbort = payload.autoWrapup === true;
     const queueSid = payload.task.queueSid;
     const queueName = payload.task.queueName;
     const numDispositions = getDispositionsForQueue(queueSid, queueName).length;
@@ -82,16 +87,19 @@ export const actionHook = function setDispositionBeforeCompleteTask(flex: typeof
 
     // If nothing exists for this task in Redux, we only need to check the configuration to see if we should abort.
     if (!taskDisposition) {
-      if (isRequireDispositionEnabledForQueue(queueSid, queueName) && numDispositions > 0) {
-        handleAbort(flex, abortFunction, queueSid, true);
-      } else if (missingCustomAttrs > 0) {
-        handleAbort(flex, abortFunction, queueSid, false);
+      if (!skipAbort) {
+        if (isRequireDispositionEnabledForQueue(queueSid, queueName) && numDispositions > 0) {
+          handleAbort(flex, abortFunction, queueSid, true);
+        } else if (missingCustomAttrs > 0) {
+          handleAbort(flex, abortFunction, queueSid, false);
+        }
       }
       return;
     }
 
     // Validate the task data from Redux against the configuration to see if any required data is missing.
     if (
+      !skipAbort &&
       isRequireDispositionEnabledForQueue(queueSid, queueName) &&
       !taskDisposition.disposition &&
       numDispositions > 0
@@ -100,7 +108,7 @@ export const actionHook = function setDispositionBeforeCompleteTask(flex: typeof
       return;
     }
 
-    if (missingCustomAttrs > 0) {
+    if (!skipAbort && missingCustomAttrs > 0) {
       handleAbort(flex, abortFunction, queueSid, false);
       return;
     }
