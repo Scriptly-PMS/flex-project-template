@@ -8,7 +8,10 @@ import { TaskQualificationConfig } from '../types/ServiceConfiguration';
 import TaskRouterService from '../../../utils/serverless/TaskRouter/TaskRouterService';
 import logger from '../../../utils/logger';
 
+// SD-3713: `manager` is threaded through so the auto-wrapup callback can read the
+// dispositions Redux slice and persist the agent's selection before CompleteTask fires.
 const startTimer = (
+  manager: Flex.Manager,
   task: Flex.ITask,
   taskConfig: TaskQualificationConfig,
   isExtended: boolean,
@@ -26,13 +29,23 @@ const startTimer = (
       unsubscribe();
     }
     if (task && Flex.TaskHelper.isInWrapupMode(task)) {
-      if (taskConfig.default_outcome) {
+      // SD-3713: persist the agent-selected disposition (held in the dispositions Redux slice)
+      // before CompleteTask. The upstream `beforeCompleteTask` hook can't be relied on here:
+      // under `require_disposition` it aborts CompleteTask, and under native (Agent Copilot)
+      // wrapup it bypasses the abort *without* persisting the selection. Fall back to
+      // `default_outcome` only when no agent selection exists. Optional chaining keeps this
+      // safe when the dispositions feature flag is off (slice never registered).
+      const taskDisposition = (manager.store.getState() as AppState)[reduxNamespace]
+        .dispositions?.tasks?.[task.taskSid];
+      const outcomeToSave = taskDisposition?.disposition || taskConfig.default_outcome;
+
+      if (outcomeToSave) {
         try {
           await TaskRouterService.updateTaskAttributes(
             task.taskSid,
             {
               conversations: {
-                outcome: taskConfig.default_outcome,
+                outcome: outcomeToSave,
               },
             },
             true,
@@ -96,12 +109,12 @@ export const setAutoCompleteTimeout = async (
             (!isExtended || taskConfig.extended_wrapup_time > 0)
           ) {
             logger.info(`[agent-automation] Creating new auto-wrapup timer for ${sid}`);
-            wrapTimer = startTimer(task, taskConfig, isExtended, unsubscribe);
+            wrapTimer = startTimer(manager, task, taskConfig, isExtended, unsubscribe);
           }
         })
       : undefined;
 
-    wrapTimer = startTimer(task, taskConfig, isExtended, unsubscribe);
+    wrapTimer = startTimer(manager, task, taskConfig, isExtended, unsubscribe);
   } catch (error: any) {
     logger.error(`Error attempting to set wrap up timeout for reservation: ${sid}`, error);
   }
