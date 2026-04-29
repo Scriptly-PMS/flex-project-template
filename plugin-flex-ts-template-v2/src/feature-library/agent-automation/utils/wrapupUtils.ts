@@ -42,8 +42,8 @@ const startTimer = (
       // *without* persisting any data. Falls back to `taskConfig.default_outcome` only for
       // the `outcome` field, when no agent selection exists. Optional chaining keeps this
       // safe when the dispositions feature flag is off (slice never registered).
-      const taskDisposition: DispositionsTaskState | undefined =
-        (manager.store.getState() as AppState)[reduxNamespace].dispositions?.tasks?.[task.taskSid];
+      const taskDisposition: DispositionsTaskState | undefined = (manager.store.getState() as AppState)[reduxNamespace]
+        .dispositions?.tasks?.[task.taskSid];
       const outcomeToSave = taskDisposition?.disposition || taskConfig.default_outcome;
 
       const conversations: Record<string, string> = {};
